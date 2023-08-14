@@ -9,12 +9,15 @@ let tokenKey = "gmail-token"
 let defaultAskAccessSendFrom = ProcessInfo.processInfo.environment[askAccessSendFromKey]
 let defaultAskAccessSendTo = ProcessInfo.processInfo.environment[askAccessSendToKey]
 
+var keychain = Keychain(service: "local.ask-access")
+
 @main struct AskAccess: ParsableCommand {
     private enum CodingKeys: CodingKey {
         case shouldResetToken 
         case projectName 
         case sendFrom
         case sendTo
+        case shouldSendThanksAfterAccessGranted
     }
 
     @Flag(
@@ -22,6 +25,13 @@ let defaultAskAccessSendTo = ProcessInfo.processInfo.environment[askAccessSendTo
         help: "Reset email token."
     )
     var shouldResetToken: Bool = false
+
+    @Flag(
+        name: [.customLong("tackarr")],
+        inversion: .prefixedNo,
+        help: "Send thanks after access has been granted."
+    )
+    var shouldSendThanksAfterAccessGranted = true
 
     @Option(help: "Email to send from.")
     var sendFrom: String = defaultAskAccessSendFrom ?? ""
@@ -34,8 +44,6 @@ let defaultAskAccessSendTo = ProcessInfo.processInfo.environment[askAccessSendTo
 
     @Argument(help: "The project name.")
     var projectName: String? = nil
-
-    var keychain = Keychain(service: "local.ask-access")
 
     func checkProjectName() throws -> String? {
         guard let projectName = projectName else {
@@ -66,7 +74,7 @@ let defaultAskAccessSendTo = ProcessInfo.processInfo.environment[askAccessSendTo
 }
 
 extension AskAccess {
-    mutating func run() throws {
+    func run() throws {
         if shouldResetToken {
             doResetToken()
         }
@@ -115,9 +123,72 @@ extension AskAccess {
             }
         )
         done.wait()
+
+        let sendThanks = {
+            guard shouldSendThanksAfterAccessGranted else {
+                return
+            }
+            let done = DispatchSemaphore(value: 0)
+            smtp.send([Mail(
+                    from: sendFrom,
+                    to: [sendTo],
+                    subject: "Re: \(subject)",
+                    text: "tackarr"
+                )],
+                progress: { (mail, error) in
+                    guard error == nil else {
+                        fatalError(error.debugDescription)
+                    }
+                },
+                completion: { (sent, error) in
+                    guard error.isEmpty else {
+                        fatalError("\(error[0])")
+                    }
+                    done.signal()
+                }
+            )
+            done.wait()
+        };
+
+        guard shouldSendThanksAfterAccessGranted else {
+            return
+        }
+
+        var attempt = 1
+        let host = "ubuntu@\(projectName.lowercased()).dev"
+        while true {
+            defer { attempt += 1 }
+            print("Trying to ssh into '\(host)': attempt: \(attempt).")
+            guard Self.didGetSSHAccessTo(host) else {
+                print("Retrying in 60 seconds")
+                sleep(60)
+                continue
+            }
+            sendThanks()
+            break
+        }
+
+        print("Done.")
     }
 
-    mutating func doResetToken() {
+    static func didGetSSHAccessTo(_ host: String) -> Bool {
+        let task = Process()
+        task.launchPath = "/usr/bin/ssh"
+        task.arguments = [
+            "-q",
+            "-oPasswordAuthentication=no",
+            "-oStrictHostKeyChecking=no",
+            "-oBatchMode=yes",
+            "-oConnectTimeout=5",
+            host,
+            "exit 0"
+        ]
+        task.launch()
+        task.waitUntilExit()
+        return task.terminationReason == .exit && task.terminationStatus == 0
+    }
+
+    func doResetToken() {
         keychain[tokenKey] = nil
     }
 
