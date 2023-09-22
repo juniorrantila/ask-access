@@ -160,8 +160,8 @@ extension AskAccess {
             defer { attempt += 1 }
             print("Trying to ssh into '\(host)': attempt: \(attempt).")
             guard Self.didGetSSHAccessTo(host) else {
-                print("Retrying in 60 seconds")
-                sleep(60)
+                print("Retrying in 15 minutes")
+                sleep(15 * 60)
                 continue
             }
             sendThanks()
